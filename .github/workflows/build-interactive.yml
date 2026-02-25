@@ -32,6 +32,8 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           brew install pango fontconfig freetype harfbuzz glib gobject-introspection libffi
+          # Export Homebrew lib path for all subsequent steps (cffi.dlopen needs it)
+          echo "DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib" >> "$GITHUB_ENV"
 
       - name: Install native dependencies (Linux)
         if: runner.os == 'Linux'
