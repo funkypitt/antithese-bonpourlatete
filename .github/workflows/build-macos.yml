@@ -1,0 +1,209 @@
+name: Build macOS arm64 binary
+
+on:
+  workflow_dispatch:
+    inputs:
+      python-version:
+        description: "Python version"
+        required: false
+        default: "3.13"
+
+jobs:
+  build:
+    runs-on: macos-latest   # Apple Silicon (M1+) runner
+    steps:
+      # ── 1. Checkout ────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Install native libraries via Homebrew ───────────────────
+      - name: Install native dependencies (Homebrew)
+        run: |
+          brew install pango fontconfig freetype harfbuzz glib gobject-introspection libffi
+
+      # ── 3. Setup Python ────────────────────────────────────────────
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ github.event.inputs.python-version || '3.13' }}
+
+      # ── 4. Install pip dependencies ────────────────────────────────
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r scripts/requirements-antithese.txt pyinstaller
+
+      # ── 5. Verify WeasyPrint can load native libs ──────────────────
+      - name: Verify WeasyPrint native bindings
+        run: |
+          python -c "
+          from weasyprint.text.ffi import ffi, gobject, pango, pangoft2, harfbuzz, harfbuzz_subset, fontconfig
+          print('gobject  :', gobject)
+          print('pango    :', pango)
+          print('pangoft2 :', pangoft2)
+          print('harfbuzz :', harfbuzz)
+          print('hb-subset:', harfbuzz_subset)
+          print('fontconf :', fontconfig)
+          print('All WeasyPrint native libs loaded OK')
+          "
+
+      # ── 6. Discover all dylibs (BFS) for bundling ─────────────────
+      - name: Discover dylibs to bundle
+        id: dylibs
+        run: |
+          python3 << 'PYEOF'
+          """
+          BFS discovery of Homebrew dylibs required by WeasyPrint.
+          Starts from the 6 primary libs, follows otool -L recursively,
+          writes --add-binary flags to dylib_args.txt.
+          """
+          import subprocess, re, os, pathlib
+
+          BREW_PREFIX = "/opt/homebrew"
+          BREW_LIB = f"{BREW_PREFIX}/lib"
+
+          # Primary dylibs that WeasyPrint loads via cffi.dlopen()
+          PRIMARY_PATTERNS = [
+              "libgobject-2.0",
+              "libpango-1.0",
+              "libpangoft2-1.0",
+              "libharfbuzz",
+              "libfontconfig",
+          ]
+
+          def find_primary_libs():
+              """Find the primary .dylib files in Homebrew lib dir."""
+              libs = set()
+              lib_dir = pathlib.Path(BREW_LIB)
+              if not lib_dir.exists():
+                  # Fallback: try /usr/local for Intel Macs
+                  lib_dir = pathlib.Path("/usr/local/lib")
+              for pattern in PRIMARY_PATTERNS:
+                  for f in lib_dir.glob(f"{pattern}*.dylib"):
+                      resolved = f.resolve()
+                      if resolved.exists():
+                          libs.add(str(resolved))
+              return libs
+
+          def get_deps(dylib_path):
+              """Get dylib dependencies via otool -L."""
+              try:
+                  result = subprocess.run(
+                      ["otool", "-L", dylib_path],
+                      capture_output=True, text=True, timeout=10
+                  )
+                  deps = set()
+                  for line in result.stdout.strip().split("\n")[1:]:  # skip first line (self)
+                      match = re.match(r"\s+(.+\.dylib)\s+\(", line)
+                      if match:
+                          path = match.group(1)
+                          # Only bundle Homebrew libs, not system ones
+                          if path.startswith(BREW_PREFIX) or path.startswith("/usr/local/"):
+                              resolved = str(pathlib.Path(path).resolve())
+                              if os.path.exists(resolved):
+                                  deps.add(resolved)
+                  return deps
+              except Exception as e:
+                  print(f"  warning: otool failed for {dylib_path}: {e}")
+                  return set()
+
+          # BFS
+          visited = set()
+          queue = list(find_primary_libs())
+          print(f"Primary libs found: {len(queue)}")
+          for lib in sorted(queue):
+              print(f"  {lib}")
+
+          while queue:
+              current = queue.pop(0)
+              if current in visited:
+                  continue
+              visited.add(current)
+              deps = get_deps(current)
+              for dep in deps:
+                  if dep not in visited:
+                      queue.append(dep)
+
+          print(f"\nTotal dylibs to bundle: {len(visited)}")
+          for lib in sorted(visited):
+              print(f"  {lib}")
+
+          # Write --add-binary flags to file
+          args_file = "dylib_args.txt"
+          with open(args_file, "w") as f:
+              for lib in sorted(visited):
+                  f.write(f"--add-binary={lib}:.\n")
+
+          print(f"\nWrote {len(visited)} --add-binary flags to {args_file}")
+          PYEOF
+
+      # ── 7. Build with PyInstaller ──────────────────────────────────
+      - name: Build with PyInstaller
+        run: |
+          # Read dylib args from file (one flag per line)
+          DYLIB_ARGS=""
+          while IFS= read -r line; do
+            DYLIB_ARGS="$DYLIB_ARGS $line"
+          done < dylib_args.txt
+
+          pyinstaller \
+            --onefile \
+            --name antithese_scraper \
+            --hidden-import=weasyprint \
+            --hidden-import=weasyprint.text \
+            --hidden-import=weasyprint.text.ffi \
+            --hidden-import=weasyprint.text.linebreak \
+            --hidden-import=weasyprint.text.shaping \
+            --hidden-import=weasyprint.css \
+            --hidden-import=weasyprint.css.computed_values \
+            --hidden-import=weasyprint.css.counters \
+            --hidden-import=weasyprint.css.media_queries \
+            --hidden-import=weasyprint.css.properties \
+            --hidden-import=weasyprint.css.validation \
+            --hidden-import=weasyprint.html \
+            --hidden-import=weasyprint.images \
+            --hidden-import=weasyprint.layout \
+            --hidden-import=weasyprint.svg \
+            --hidden-import=weasyprint.pdf \
+            --hidden-import=bs4 \
+            --hidden-import=requests \
+            --hidden-import=lxml \
+            --hidden-import=lxml.etree \
+            --hidden-import=lxml.html \
+            --hidden-import=cffi \
+            --hidden-import=cssselect2 \
+            --hidden-import=tinycss2 \
+            --hidden-import=tinyhtml5 \
+            --hidden-import=pydyf \
+            --hidden-import=Pyphen \
+            --hidden-import=PIL \
+            --hidden-import=fontTools \
+            --collect-all weasyprint \
+            --collect-all Pyphen \
+            --collect-all cssselect2 \
+            --collect-all tinycss2 \
+            $DYLIB_ARGS \
+            scripts/antithese_scraper.py
+
+          echo "Build complete"
+          ls -lh dist/
+
+      # ── 8. Smoke test ──────────────────────────────────────────────
+      - name: Smoke test
+        run: |
+          echo "=== file ==="
+          file dist/antithese_scraper
+
+          echo "=== lipo -info ==="
+          lipo -info dist/antithese_scraper
+
+          echo "=== --help ==="
+          ./dist/antithese_scraper --help
+
+      # ── 9. Upload artifact ─────────────────────────────────────────
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: antithese_scraper-macos-arm64
+          path: dist/antithese_scraper
+          retention-days: 30

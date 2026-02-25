@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+*.egg
+
+# PyInstaller
+dist/
+build/
+*.spec
+
+# Virtual environments
+venv/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+
+# Output directories (PDFs)
+journaux_du_jour/
+letemps/
+economist/
+tricycle/
+antithese/
+courrier_international/
+substack/
+
+# Cookies / credentials
+cookies.json
+ci_cookies.json
+
+# Logs
+*.log
+firebase-debug.log
+
+# Misc
+*.txt
+!scripts/requirements-antithese.txt
