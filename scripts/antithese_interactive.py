@@ -37,7 +37,10 @@ EDITION_URL = "https://www.antithese.info/bon-pour-la-tete/"
 LOGIN_URL = "https://www.antithese.info/login/"
 WP_LOGIN_URL = "https://www.antithese.info/wp-login.php"
 BASE_URL = "https://www.antithese.info"
-DEFAULT_OUTPUT_DIR = Path.home() / "kDrive" / "newspapers" / "antithese"
+if sys.platform == "darwin":
+    DEFAULT_OUTPUT_DIR = Path.home() / "Desktop" / "antithese"
+else:
+    DEFAULT_OUTPUT_DIR = Path.home() / "kDrive" / "newspapers" / "antithese"
 
 LOGO_URL = "https://www.antithese.info/wp-content/uploads/Logo-Antihese-et-Bon-pour-la-tete.svg"
 
