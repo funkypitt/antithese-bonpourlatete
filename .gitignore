@@ -44,3 +44,4 @@ firebase-debug.log
 # Misc
 *.txt
 !scripts/requirements-antithese.txt
+!scripts/requirements-antithese-interactive.txt

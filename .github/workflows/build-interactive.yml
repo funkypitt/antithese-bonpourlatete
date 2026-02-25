@@ -1,0 +1,316 @@
+name: Build antithese_interactive (Linux + macOS arm64)
+
+on:
+  workflow_dispatch:
+    inputs:
+      python-version:
+        description: "Python version"
+        required: false
+        default: "3.13"
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux-x86_64
+            artifact_name: antithese_interactive-linux-x86_64
+          - os: macos-latest
+            platform: macos-arm64
+            artifact_name: antithese_interactive-macos-arm64
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      # ── 1. Checkout ────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Install native dependencies ─────────────────────────────
+      - name: Install native dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install pango fontconfig freetype harfbuzz glib gobject-introspection libffi
+
+      - name: Install native dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libpango1.0-dev \
+            libpangoft2-1.0-0 \
+            libharfbuzz-dev \
+            libfontconfig1-dev \
+            libfreetype6-dev \
+            libglib2.0-dev \
+            libgobject-introspection-dev \
+            libffi-dev \
+            libcairo2-dev \
+            libgdk-pixbuf2.0-dev
+
+      # ── 3. Setup Python ────────────────────────────────────────────
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ github.event.inputs.python-version || '3.13' }}
+
+      # ── 4. Install pip dependencies ────────────────────────────────
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r scripts/requirements-antithese-interactive.txt pyinstaller
+
+      # ── 5. Verify WeasyPrint ───────────────────────────────────────
+      - name: Verify WeasyPrint native bindings
+        run: |
+          python -c "
+          from weasyprint.text.ffi import ffi, gobject, pango, pangoft2, harfbuzz, harfbuzz_subset, fontconfig
+          print('gobject  :', gobject)
+          print('pango    :', pango)
+          print('pangoft2 :', pangoft2)
+          print('harfbuzz :', harfbuzz)
+          print('hb-subset:', harfbuzz_subset)
+          print('fontconf :', fontconfig)
+          print('All WeasyPrint native libs loaded OK')
+          "
+
+      # ── 6. Discover dylibs to bundle (macOS only) ─────────────────
+      - name: Discover dylibs to bundle (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          python3 << 'PYEOF'
+          """BFS discovery of Homebrew dylibs required by WeasyPrint."""
+          import subprocess, re, os, pathlib
+
+          BREW_PREFIX = "/opt/homebrew"
+          BREW_LIB = f"{BREW_PREFIX}/lib"
+
+          PRIMARY_PATTERNS = [
+              "libgobject-2.0",
+              "libpango-1.0",
+              "libpangoft2-1.0",
+              "libharfbuzz",
+              "libfontconfig",
+          ]
+
+          def find_primary_libs():
+              libs = set()
+              lib_dir = pathlib.Path(BREW_LIB)
+              if not lib_dir.exists():
+                  lib_dir = pathlib.Path("/usr/local/lib")
+              for pattern in PRIMARY_PATTERNS:
+                  for f in lib_dir.glob(f"{pattern}*.dylib"):
+                      resolved = f.resolve()
+                      if resolved.exists():
+                          libs.add(str(resolved))
+              return libs
+
+          def get_deps(dylib_path):
+              try:
+                  result = subprocess.run(
+                      ["otool", "-L", dylib_path],
+                      capture_output=True, text=True, timeout=10
+                  )
+                  deps = set()
+                  for line in result.stdout.strip().split("\n")[1:]:
+                      match = re.match(r"\s+(.+\.dylib)\s+\(", line)
+                      if match:
+                          path = match.group(1)
+                          if path.startswith(BREW_PREFIX) or path.startswith("/usr/local/"):
+                              resolved = str(pathlib.Path(path).resolve())
+                              if os.path.exists(resolved):
+                                  deps.add(resolved)
+                  return deps
+              except Exception as e:
+                  print(f"  warning: otool failed for {dylib_path}: {e}")
+                  return set()
+
+          visited = set()
+          queue = list(find_primary_libs())
+          print(f"Primary libs found: {len(queue)}")
+          for lib in sorted(queue):
+              print(f"  {lib}")
+
+          while queue:
+              current = queue.pop(0)
+              if current in visited:
+                  continue
+              visited.add(current)
+              deps = get_deps(current)
+              for dep in deps:
+                  if dep not in visited:
+                      queue.append(dep)
+
+          print(f"\nTotal dylibs to bundle: {len(visited)}")
+          for lib in sorted(visited):
+              print(f"  {lib}")
+
+          with open("dylib_args.txt", "w") as f:
+              for lib in sorted(visited):
+                  f.write(f"--add-binary={lib}:.\n")
+
+          print(f"\nWrote {len(visited)} --add-binary flags to dylib_args.txt")
+          PYEOF
+
+      # ── 6b. Discover .so libs to bundle (Linux) ───────────────────
+      - name: Discover shared libs to bundle (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          python3 << 'PYEOF'
+          """BFS discovery of shared libs required by WeasyPrint on Linux."""
+          import subprocess, re, os, pathlib
+
+          SYSTEM_PREFIXES = ["/lib/x86_64-linux-gnu", "/usr/lib/x86_64-linux-gnu", "/usr/lib"]
+
+          PRIMARY_PATTERNS = [
+              "libgobject-2.0.so",
+              "libpango-1.0.so",
+              "libpangoft2-1.0.so",
+              "libharfbuzz.so",
+              "libharfbuzz-subset.so",
+              "libfontconfig.so",
+          ]
+
+          def find_primary_libs():
+              libs = set()
+              for prefix in SYSTEM_PREFIXES:
+                  lib_dir = pathlib.Path(prefix)
+                  if not lib_dir.exists():
+                      continue
+                  for pattern in PRIMARY_PATTERNS:
+                      for f in lib_dir.glob(f"{pattern}*"):
+                          if f.is_file() or f.is_symlink():
+                              resolved = str(f.resolve())
+                              if os.path.exists(resolved):
+                                  libs.add(resolved)
+              return libs
+
+          def get_deps(lib_path):
+              try:
+                  result = subprocess.run(
+                      ["ldd", lib_path],
+                      capture_output=True, text=True, timeout=10
+                  )
+                  deps = set()
+                  for line in result.stdout.strip().split("\n"):
+                      match = re.match(r"\s+\S+\s+=>\s+(\S+)\s+\(", line)
+                      if match:
+                          path = match.group(1)
+                          # Only bundle non-glibc libs
+                          if any(skip in path for skip in [
+                              "libc.so", "libm.so", "libdl.so", "librt.so",
+                              "libpthread.so", "ld-linux", "linux-vdso",
+                              "libstdc++", "libgcc_s"
+                          ]):
+                              continue
+                          resolved = str(pathlib.Path(path).resolve())
+                          if os.path.exists(resolved):
+                              deps.add(resolved)
+                  return deps
+              except Exception as e:
+                  print(f"  warning: ldd failed for {lib_path}: {e}")
+                  return set()
+
+          visited = set()
+          queue = list(find_primary_libs())
+          print(f"Primary libs found: {len(queue)}")
+          for lib in sorted(queue):
+              print(f"  {lib}")
+
+          while queue:
+              current = queue.pop(0)
+              if current in visited:
+                  continue
+              visited.add(current)
+              deps = get_deps(current)
+              for dep in deps:
+                  if dep not in visited:
+                      queue.append(dep)
+
+          print(f"\nTotal libs to bundle: {len(visited)}")
+          for lib in sorted(visited):
+              print(f"  {lib}")
+
+          with open("dylib_args.txt", "w") as f:
+              for lib in sorted(visited):
+                  f.write(f"--add-binary={lib}:.\n")
+
+          print(f"\nWrote {len(visited)} --add-binary flags to dylib_args.txt")
+          PYEOF
+
+      # ── 7. Build with PyInstaller ──────────────────────────────────
+      - name: Build with PyInstaller
+        run: |
+          # Read dylib/so args from file
+          DYLIB_ARGS=""
+          if [ -f dylib_args.txt ]; then
+            while IFS= read -r line; do
+              DYLIB_ARGS="$DYLIB_ARGS $line"
+            done < dylib_args.txt
+          fi
+
+          pyinstaller \
+            --onefile \
+            --name antithese_interactive \
+            --hidden-import=weasyprint \
+            --hidden-import=weasyprint.text \
+            --hidden-import=weasyprint.text.ffi \
+            --hidden-import=weasyprint.text.linebreak \
+            --hidden-import=weasyprint.text.shaping \
+            --hidden-import=weasyprint.css \
+            --hidden-import=weasyprint.css.computed_values \
+            --hidden-import=weasyprint.css.counters \
+            --hidden-import=weasyprint.css.media_queries \
+            --hidden-import=weasyprint.css.properties \
+            --hidden-import=weasyprint.css.validation \
+            --hidden-import=weasyprint.html \
+            --hidden-import=weasyprint.images \
+            --hidden-import=weasyprint.layout \
+            --hidden-import=weasyprint.svg \
+            --hidden-import=weasyprint.pdf \
+            --hidden-import=bs4 \
+            --hidden-import=requests \
+            --hidden-import=lxml \
+            --hidden-import=lxml.etree \
+            --hidden-import=lxml.html \
+            --hidden-import=cffi \
+            --hidden-import=cssselect2 \
+            --hidden-import=tinycss2 \
+            --hidden-import=tinyhtml5 \
+            --hidden-import=pydyf \
+            --hidden-import=Pyphen \
+            --hidden-import=PIL \
+            --hidden-import=fontTools \
+            --collect-all weasyprint \
+            --collect-all Pyphen \
+            --collect-all cssselect2 \
+            --collect-all tinycss2 \
+            $DYLIB_ARGS \
+            scripts/antithese_interactive.py
+
+          echo "Build complete"
+          ls -lh dist/
+
+      # ── 8. Smoke test ──────────────────────────────────────────────
+      - name: Smoke test
+        run: |
+          echo "=== file ==="
+          file dist/antithese_interactive
+
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            echo "=== lipo -info ==="
+            lipo -info dist/antithese_interactive
+          fi
+
+          echo "=== version check ==="
+          # The script requires a TTY, so just verify it's a valid executable
+          file dist/antithese_interactive | grep -q "executable"
+          echo "Smoke test passed"
+
+      # ── 9. Upload artifact ─────────────────────────────────────────
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/antithese_interactive
+          retention-days: 30
