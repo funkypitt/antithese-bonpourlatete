@@ -11,6 +11,7 @@ on:
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
@@ -43,7 +44,7 @@ jobs:
             libfontconfig1-dev \
             libfreetype6-dev \
             libglib2.0-dev \
-            libgobject-introspection-dev \
+            libgirepository1.0-dev \
             libffi-dev \
             libcairo2-dev \
             libgdk-pixbuf2.0-dev
