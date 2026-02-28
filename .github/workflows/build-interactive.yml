@@ -1,4 +1,4 @@
-name: Build antithese_interactive (Linux + macOS arm64)
+name: Build antithese_interactive + GUI (Linux + macOS arm64)
 
 on:
   workflow_dispatch:
@@ -16,10 +16,10 @@ jobs:
         include:
           - os: ubuntu-latest
             platform: linux-x86_64
-            artifact_name: antithese_interactive-linux-x86_64
+            artifact_name: antithese-linux-x86_64
           - os: macos-latest
             platform: macos-arm64
-            artifact_name: antithese_interactive-macos-arm64
+            artifact_name: antithese-macos-arm64
 
     runs-on: ${{ matrix.os }}
     steps:
@@ -241,8 +241,8 @@ jobs:
           print(f"\nWrote {len(visited)} --add-binary flags to dylib_args.txt")
           PYEOF
 
-      # ── 7. Build with PyInstaller ──────────────────────────────────
-      - name: Build with PyInstaller
+      # ── 7. Build CLI with PyInstaller ────────────────────────────────
+      - name: Build antithese_interactive (CLI)
         run: |
           # Read dylib/so args from file
           DYLIB_ARGS=""
@@ -291,29 +291,55 @@ jobs:
             $DYLIB_ARGS \
             scripts/antithese_interactive.py
 
-          echo "Build complete"
+          echo "CLI build complete"
+          ls -lh dist/
+
+      # ── 7b. Build GUI with PyInstaller ───────────────────────────────
+      - name: Build antithese_gui (GUI)
+        run: |
+          DYLIB_ARGS=""
+          if [ -f dylib_args.txt ]; then
+            while IFS= read -r line; do
+              DYLIB_ARGS="$DYLIB_ARGS $line"
+            done < dylib_args.txt
+          fi
+
+          pyinstaller \
+            --onefile \
+            --name antithese_gui \
+            --hidden-import=pyte \
+            --hidden-import=wcwidth \
+            $DYLIB_ARGS \
+            scripts/antithese_gui.py
+
+          echo "GUI build complete"
           ls -lh dist/
 
       # ── 8. Smoke test ──────────────────────────────────────────────
       - name: Smoke test
         run: |
-          echo "=== file ==="
+          echo "=== antithese_interactive ==="
           file dist/antithese_interactive
+          file dist/antithese_interactive | grep -q "executable"
+
+          echo "=== antithese_gui ==="
+          file dist/antithese_gui
+          file dist/antithese_gui | grep -q "executable"
 
           if [ "$RUNNER_OS" = "macOS" ]; then
             echo "=== lipo -info ==="
             lipo -info dist/antithese_interactive
+            lipo -info dist/antithese_gui
           fi
 
-          echo "=== version check ==="
-          # The script requires a TTY, so just verify it's a valid executable
-          file dist/antithese_interactive | grep -q "executable"
           echo "Smoke test passed"
 
-      # ── 9. Upload artifact ─────────────────────────────────────────
+      # ── 9. Upload artifacts ─────────────────────────────────────────
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
-          path: dist/antithese_interactive
+          path: |
+            dist/antithese_interactive
+            dist/antithese_gui
           retention-days: 30

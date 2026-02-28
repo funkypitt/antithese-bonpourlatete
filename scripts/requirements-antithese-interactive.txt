@@ -3,3 +3,4 @@ beautifulsoup4>=4.11.0
 weasyprint>=68.0
 lxml>=4.9.0
 cffi>=1.15.0
+pyte>=0.8.0

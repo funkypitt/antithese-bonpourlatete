@@ -54,6 +54,7 @@ HEADERS = {
 OUTPUT_FORMATS = {
     "a4premium": "A4 Premium — New Yorker (2 colonnes)",
     "a4editorial": "A4 Éditorial — Kinfolk (1 colonne)",
+    "a4cuttingedge": "A4 Cutting-Edge — Brutalist (avant-garde)",
     "epub": "EPUB (ebook)",
 }
 
@@ -75,7 +76,7 @@ def print_banner():
     print("  ║   ANTITHÈSE — Bon pour la tête                              ║")
     print("  ║   Édition interactive                                        ║")
     print("  ║                                                              ║")
-    print("  ║   Formats: A4 Premium · A4 Éditorial · EPUB                 ║")
+    print("  ║   Formats: A4 Premium · Éditorial · Cutting-Edge · EPUB      ║")
     print("  ║                                                              ║")
     print("  ╚══════════════════════════════════════════════════════════════╝")
     print()
@@ -789,6 +790,28 @@ def _add_drop_cap_html(body_html: str) -> str:
             first_char = inner[0]
             rest = inner[1:]
             return f'<p><span class="drop-cap">{first_char}</span>{rest}</p>'
+        return match.group(0)
+
+    return re.sub(r"<p>(.+?)</p>", replacer, body_html, count=1,
+                  flags=re.DOTALL)
+
+
+def _add_bold_first_word_html(body_html: str) -> str:
+    """Bold + enlarge the first word of the first paragraph (cutting-edge)."""
+    done = False
+
+    def replacer(match):
+        nonlocal done
+        if done:
+            return match.group(0)
+        done = True
+        inner = match.group(1)
+        if inner:
+            parts = inner.split(" ", 1)
+            if len(parts) == 2:
+                return (f'<p><span class="first-word">{parts[0]}</span>'
+                        f' {parts[1]}</p>')
+            return f'<p><span class="first-word">{parts[0]}</span></p>'
         return match.group(0)
 
     return re.sub(r"<p>(.+?)</p>", replacer, body_html, count=1,
@@ -1526,6 +1549,408 @@ def generate_editorial_pdf(articles, edition_title, date_str, output_path,
 
 
 # ══════════════════════════════════════════════════════════════════════════
+#  PDF GENERATION — A4 Cutting-Edge (Swiss Brutalist, avant-garde)
+# ══════════════════════════════════════════════════════════════════════════
+
+def generate_cuttingedge_pdf(articles, edition_title, date_str, output_path,
+                              session, logo_light_uri, logo_dark_uri,
+                              dessin_info, image_cache):
+    """Generate a cutting-edge A4 PDF — Swiss Brutalist / contemporary."""
+    from weasyprint import HTML
+
+    print("  Préparation de l'édition A4 Cutting-Edge...")
+
+    # Build articles HTML
+    articles_html = ""
+    for i, art in enumerate(articles):
+        category_html = ""
+        if art.get("category"):
+            category_html = (
+                f'<div class="ce-category">{art["category"]}</div>')
+
+        author_html = ""
+        if art.get("author"):
+            author_html = f'<div class="ce-author">{art["author"]}</div>'
+
+        lead_html = ""
+        if art.get("lead"):
+            lead_html = f'<div class="ce-lead">{art["lead"]}</div>'
+
+        # Hero image
+        image_html = ""
+        img_url = art.get("image_url") or art.get("thumb_url")
+        if img_url:
+            hires = re.sub(r"-\d+x\d+(\.\w+)$", r"\1", img_url)
+            data_uri = image_cache.get(hires) or image_cache.get(img_url)
+            if data_uri:
+                cap = art.get("image_caption", "")
+                cap_html = (f'<div class="ce-img-caption">{cap}</div>'
+                            if cap else "")
+                image_html = f'''
+                <div class="ce-hero-img">
+                    <img src="{data_uri}" alt="" />
+                    {cap_html}
+                </div>'''
+
+        body_html = _add_bold_first_word_html(art.get("content_html", ""))
+
+        articles_html += f"""
+        <article class="ce-article" id="art-{i}">
+            {category_html}
+            <h2 class="ce-title">{art.get("title", "Sans titre")}</h2>
+            {author_html}
+            <div class="ce-accent-rule"></div>
+            {image_html}
+            {lead_html}
+            <div class="ce-body">
+                {body_html}
+            </div>
+            <div class="ce-article-end">&#x25A0;</div>
+        </article>
+        """
+
+    # Cover logo — use dark-bg version (white logo on dark cover)
+    if logo_dark_uri:
+        logo_html = f'''
+        <div class="cover-logo-wrap">
+            <img src="{logo_dark_uri}" alt="Antithèse" />
+        </div>'''
+    else:
+        logo_html = '<h1 class="cover-title-fallback">ANTITHÈSE</h1>'
+
+    # Colophon logo
+    if logo_light_uri:
+        colophon_logo = (
+            f'<img class="colophon-logo" src="{logo_light_uri}" alt="" />')
+    elif logo_dark_uri:
+        colophon_logo = (
+            f'<img class="colophon-logo" src="{logo_dark_uri}" alt="" />')
+    else:
+        colophon_logo = ""
+
+    # TOC
+    toc_items = ""
+    for idx, art in enumerate(articles):
+        cat = (f'<span class="toc-cat">{art.get("category", "")}</span>'
+               if art.get("category") else "")
+        auth = (f'<span class="toc-author">{art.get("author", "")}</span>'
+                if art.get("author") else "")
+        toc_items += f"""
+        <a class="toc-entry" href="#art-{idx}">
+            <span class="toc-details">
+                {cat}
+                <span class="toc-title">{art.get("title", "")}</span>
+                {auth}
+            </span>
+        </a>"""
+
+    # Cover content
+    cover_content = ""
+    if dessin_info:
+        dessin_uri = download_image_as_data_uri(session,
+                                                 dessin_info["image_url"])
+        if not dessin_uri and dessin_info.get("image_url_fallback"):
+            dessin_uri = download_image_as_data_uri(
+                session, dessin_info["image_url_fallback"])
+        if dessin_uri:
+            dt_html = ""
+            if dessin_info.get("title"):
+                dt_html = (f'<div class="cover-dessin-title">'
+                           f'{dessin_info["title"]}</div>')
+            da_html = ""
+            if dessin_info.get("artist"):
+                da_html = (f'<div class="cover-dessin-artist">'
+                           f'{dessin_info["artist"]}</div>')
+            cover_content = f"""
+    <div class="cover-dessin">
+        <div class="cover-dessin-label">Dessin de la semaine</div>
+        <img class="cover-dessin-img" src="{dessin_uri}" alt="" />
+        {dt_html}
+        {da_html}
+    </div>"""
+
+    if not cover_content:
+        cover_content = '<div class="cover-highlights">'
+        for art in articles[:4]:
+            cat_hl = ""
+            if art.get("category"):
+                cat_hl = (f'<div class="cover-hl-cat">'
+                          f'{art.get("category", "")}</div>')
+            auth_hl = ""
+            if art.get("author"):
+                auth_hl = (f'<div class="cover-hl-author">'
+                           f'{art.get("author", "")}</div>')
+            thumb_html = ""
+            img_url = art.get("image_url") or art.get("thumb_url")
+            if img_url:
+                hires = re.sub(r"-\d+x\d+(\.\w+)$", r"\1", img_url)
+                data_uri = (image_cache.get(hires)
+                            or image_cache.get(img_url))
+                if data_uri:
+                    thumb_html = (f'<img class="cover-hl-thumb" '
+                                  f'src="{data_uri}" alt="" />')
+            cover_content += f"""
+        <div class="cover-hl">
+            {thumb_html}
+            <div class="cover-hl-text">
+                {cat_hl}
+                <div class="cover-hl-title">{art.get("title", "")}</div>
+                {auth_hl}
+            </div>
+        </div>"""
+        cover_content += "\n    </div>"
+
+    html = f"""<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<style>
+    @page {{
+        size: 210mm 297mm;
+        margin: 18mm 20mm 20mm 32mm;
+        @bottom-left {{
+            content: counter(page);
+            font-family: "DejaVu Sans Mono", "Courier New", monospace;
+            font-size: 7.5pt;
+            color: #999;
+            letter-spacing: 0.05em;
+        }}
+    }}
+    @page :first {{
+        margin: 0;
+        @bottom-left {{ content: none; }}
+    }}
+    * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+    body {{
+        font-family: "DejaVu Sans", "Noto Sans", Helvetica, Arial, sans-serif;
+        font-size: 9.5pt; line-height: 1.75; color: #1a1a1a;
+        text-align: left; orphans: 3; widows: 3;
+    }}
+
+    /* ── COVER ── */
+    .cover {{
+        page-break-after: always; width: 210mm; height: 297mm;
+        background: #0a0a0a; padding: 30mm 25mm 25mm 35mm;
+        position: relative;
+    }}
+    .cover::before {{
+        content: ""; position: absolute; top: 0; left: 28mm;
+        width: 3pt; height: 297mm; background: #0047FF;
+    }}
+    .cover-logo-wrap {{ margin-bottom: 8mm; }}
+    .cover-logo-wrap img {{ width: 50mm; height: auto; }}
+    .cover-accent-rule {{
+        width: 40mm; height: 2pt; background: #0047FF; margin-bottom: 6mm;
+    }}
+    .cover-title-fallback {{
+        font-family: "DejaVu Sans", Helvetica, sans-serif; font-size: 40pt;
+        font-weight: 700; letter-spacing: -0.04em; color: #ffffff;
+        text-transform: uppercase; margin-bottom: 4mm;
+    }}
+    .cover-subtitle {{
+        font-size: 9pt; font-weight: 400; letter-spacing: 0.35em;
+        text-transform: uppercase; color: #666; margin-bottom: 12mm;
+    }}
+    .cover-edition {{
+        font-family: "DejaVu Sans Mono", "Courier New", monospace;
+        font-size: 10pt; color: #0047FF; letter-spacing: 0.1em;
+        margin-bottom: 20mm;
+    }}
+    .cover-tagline {{
+        font-size: 8pt; color: #444; letter-spacing: 0.1em;
+        margin-bottom: 10mm;
+    }}
+
+    /* Cover highlights (dark theme) */
+    .cover-highlights {{ margin-top: 30mm; }}
+    .cover-hl {{
+        display: flex; align-items: center; gap: 4mm;
+        margin-bottom: 5mm; padding-bottom: 5mm;
+        border-bottom: 0.5pt solid #222;
+    }}
+    .cover-hl:last-child {{ border-bottom: none; }}
+    .cover-hl-thumb {{
+        width: 24mm; height: 18mm; object-fit: cover; flex-shrink: 0;
+    }}
+    .cover-hl-text {{ flex: 1; min-width: 0; }}
+    .cover-hl-cat {{
+        font-family: "DejaVu Sans Mono", monospace; font-size: 6pt;
+        text-transform: uppercase; letter-spacing: 0.15em; color: #0047FF;
+        margin-bottom: 1mm;
+    }}
+    .cover-hl-title {{
+        font-family: "DejaVu Sans", Helvetica, sans-serif; font-size: 11pt;
+        font-weight: 700; line-height: 1.2; color: #e0e0e0;
+    }}
+    .cover-hl-author {{
+        font-size: 7pt; color: #555; margin-top: 1mm;
+        font-family: "DejaVu Sans Mono", monospace;
+    }}
+    .cover-dessin {{ margin-top: 30mm; text-align: center; }}
+    .cover-dessin-label {{
+        font-family: "DejaVu Sans Mono", monospace; font-size: 7pt;
+        text-transform: uppercase; letter-spacing: 0.2em; color: #0047FF;
+        margin-bottom: 4mm;
+    }}
+    .cover-dessin-img {{
+        max-width: 110mm; max-height: 110mm; width: auto; height: auto;
+        object-fit: contain;
+    }}
+    .cover-dessin-title {{
+        font-family: "DejaVu Sans", Helvetica, sans-serif; font-size: 10pt;
+        font-weight: 700; color: #e0e0e0; margin-top: 3mm; line-height: 1.3;
+    }}
+    .cover-dessin-artist {{
+        font-size: 7pt; color: #555; margin-top: 1mm;
+        font-family: "DejaVu Sans Mono", monospace;
+    }}
+
+    /* ── TOC ── */
+    .toc-page {{ page-break-after: always; padding-top: 5mm; }}
+    .toc-header {{
+        font-family: "DejaVu Sans Mono", monospace; font-size: 7pt;
+        text-transform: uppercase; letter-spacing: 0.3em; color: #0047FF;
+        margin-bottom: 3mm; padding-bottom: 3mm;
+        border-bottom: 2pt solid #0a0a0a;
+    }}
+    .toc-entry {{
+        display: flex; align-items: baseline; margin-bottom: 4mm;
+        padding-bottom: 4mm; border-bottom: 0.3pt solid #e8e8e8;
+        text-decoration: none; color: inherit;
+    }}
+    .toc-entry:last-child {{ border-bottom: none; }}
+    .toc-entry::before {{
+        content: target-counter(attr(href), page);
+        font-family: "DejaVu Sans Mono", monospace;
+        font-size: 20pt; font-weight: 700; color: #ddd;
+        min-width: 14mm; line-height: 1;
+    }}
+    .toc-details {{ flex: 1; display: block; }}
+    .toc-cat {{
+        font-family: "DejaVu Sans Mono", monospace; font-size: 6.5pt;
+        text-transform: uppercase; letter-spacing: 0.12em; color: #0047FF;
+        display: block; margin-bottom: 1mm;
+    }}
+    .toc-title {{
+        font-family: "DejaVu Sans", Helvetica, sans-serif; font-size: 11pt;
+        font-weight: 700; line-height: 1.25; color: #1a1a1a; display: block;
+    }}
+    .toc-author {{
+        font-family: "DejaVu Sans Mono", monospace; font-size: 7.5pt;
+        color: #888; display: block; margin-top: 1mm;
+    }}
+
+    /* ── ARTICLES ── */
+    .ce-article {{ page-break-before: always; }}
+    .ce-category {{
+        display: inline-block;
+        font-family: "DejaVu Sans Mono", monospace; font-size: 7pt;
+        font-weight: 700; text-transform: uppercase; letter-spacing: 0.12em;
+        color: #ffffff; background: #0047FF; padding: 1.5mm 4mm;
+        margin-bottom: 4mm;
+    }}
+    .ce-title {{
+        font-family: "DejaVu Sans", Helvetica, sans-serif; font-size: 28pt;
+        font-weight: 700; line-height: 1.05; color: #0a0a0a;
+        letter-spacing: -0.03em; margin-bottom: 4mm;
+    }}
+    .ce-author {{
+        font-family: "DejaVu Sans Mono", monospace; font-size: 8pt;
+        text-transform: uppercase; letter-spacing: 0.08em; color: #888;
+        margin-bottom: 5mm;
+    }}
+    .ce-accent-rule {{
+        width: 100%; height: 2pt; background: #0a0a0a; margin-bottom: 6mm;
+    }}
+    .ce-hero-img {{ margin-bottom: 6mm; }}
+    .ce-hero-img img {{
+        width: 100%; height: auto; max-height: 90mm; object-fit: cover;
+        display: block;
+    }}
+    .ce-img-caption {{
+        font-family: "DejaVu Sans Mono", monospace; font-size: 6.5pt;
+        color: #999; margin-top: 1.5mm; text-align: right;
+    }}
+    .ce-lead {{
+        font-size: 11pt; font-weight: 600; line-height: 1.5; color: #333;
+        margin-bottom: 6mm; padding-bottom: 5mm;
+        border-bottom: 0.5pt solid #e0e0e0;
+    }}
+    .ce-body {{ font-size: 9.5pt; line-height: 1.75; }}
+    .ce-body p {{ margin-bottom: 0.6em; }}
+    .first-word {{
+        font-weight: 700; font-size: 13pt; letter-spacing: -0.01em;
+    }}
+    .ce-body h2, .ce-body h3, .ce-body h4 {{
+        font-size: 10pt; font-weight: 700; margin-top: 1.5em;
+        margin-bottom: 0.4em; color: #0a0a0a; letter-spacing: 0.01em;
+        padding-bottom: 2mm; border-bottom: 1pt solid #0047FF;
+    }}
+    .ce-body blockquote {{
+        margin: 1.2em 0; padding: 0.6em 0 0.6em 5mm;
+        border-left: 3pt solid #0047FF; border-top: none; border-bottom: none;
+        color: #333; font-weight: 600; font-size: 11pt; line-height: 1.45;
+    }}
+    .ce-body blockquote p {{ margin-bottom: 0.3em; }}
+    .ce-article-end {{
+        text-align: left; margin-top: 8mm; font-size: 10pt;
+        color: #0047FF; letter-spacing: 0.1em;
+    }}
+
+    /* ── COLOPHON ── */
+    .colophon {{
+        page-break-before: always; width: 210mm; height: 297mm;
+        background: #0a0a0a; display: flex; flex-direction: column;
+        justify-content: center; align-items: center; text-align: center;
+        padding: 30mm;
+    }}
+    .colophon-logo {{ width: 30mm; height: auto; margin-bottom: 8mm; opacity: 0.5; }}
+    .colophon-text {{
+        font-family: "DejaVu Sans Mono", monospace; font-size: 7.5pt;
+        color: #555; line-height: 2.2; letter-spacing: 0.05em;
+    }}
+    .colophon-rule {{
+        width: 20mm; height: 2pt; background: #0047FF; margin: 8mm auto;
+    }}
+</style>
+</head>
+<body>
+<div class="cover">
+    {logo_html}
+    <div class="cover-accent-rule"></div>
+    <div class="cover-subtitle">Bon pour la tête</div>
+    <div class="cover-edition">{edition_title}</div>
+    <div class="cover-tagline">Média indépendant · a-partisan</div>
+    {cover_content}
+</div>
+<div class="toc-page">
+    <div class="toc-header">Sommaire</div>
+    {toc_items}
+</div>
+{articles_html}
+<div class="colophon">
+    {colophon_logo}
+    <div class="colophon-text">
+        ANTITHÈSE — BON POUR LA TÊTE<br/>
+        Média indépendant et a-partisan
+    </div>
+    <div class="colophon-rule"></div>
+    <div class="colophon-text">
+        antithese.info<br/>
+        {datetime.now().strftime("%d.%m.%Y — %H:%M")}
+    </div>
+</div>
+</body>
+</html>"""
+
+    print(f"  Génération PDF (A4 Cutting-Edge)...")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    HTML(string=html).write_pdf(str(output_path))
+    size_mb = output_path.stat().st_size / (1024 * 1024)
+    print(f"  {output_path.name} ({size_mb:.1f} Mo)")
+
+
+# ══════════════════════════════════════════════════════════════════════════
 #  EPUB GENERATION (built with zipfile — no external epub lib needed)
 # ══════════════════════════════════════════════════════════════════════════
 
@@ -2121,6 +2546,14 @@ def main():
                 session, logo_light_uri, logo_dark_uri,
                 dessin_info, image_cache)
             generated.append(("A4 Éditorial", path))
+
+        elif fmt_key == "a4cuttingedge":
+            path = out_dir / f"{date_str}-antithese_A4_cutting-edge.pdf"
+            generate_cuttingedge_pdf(
+                full_articles, edition_title, date_str, path,
+                session, logo_light_uri, logo_dark_uri,
+                dessin_info, image_cache)
+            generated.append(("A4 Cutting-Edge", path))
 
         elif fmt_key == "epub":
             path = out_dir / f"{date_str}-antithese.epub"
