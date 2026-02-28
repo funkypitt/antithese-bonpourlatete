@@ -14,11 +14,27 @@ Dependencies:
     pip install requests beautifulsoup4 weasyprint lxml cffi
 """
 
+import os
+import sys
+
+# ── PyInstaller macOS dylib fix ───────────────────────────────────────────
+# On macOS, PyInstaller --onefile extracts bundled dylibs to a temp dir
+# (sys._MEIPASS) but does NOT set DYLD_FALLBACK_LIBRARY_PATH.  Linux is fine
+# because PyInstaller injects LD_LIBRARY_PATH automatically.  We must tell
+# dlopen() where to find the Homebrew dylibs (pango, harfbuzz, etc.) BEFORE
+# WeasyPrint is imported.
+if sys.platform == "darwin" and getattr(sys, "frozen", False):
+    _meipass = getattr(sys, "_MEIPASS", None)
+    if _meipass:
+        _existing = os.environ.get("DYLD_FALLBACK_LIBRARY_PATH", "")
+        if _meipass not in _existing:
+            os.environ["DYLD_FALLBACK_LIBRARY_PATH"] = (
+                f"{_meipass}:{_existing}" if _existing else _meipass
+            )
+
 import base64
 import getpass
-import os
 import re
-import sys
 import tempfile
 import zipfile
 from datetime import datetime
