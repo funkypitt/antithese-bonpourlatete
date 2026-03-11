@@ -3646,9 +3646,8 @@ def main():
     parser.add_argument("--password", "-p", help="Mot de passe")
     parser.add_argument(
         "--format", "-f",
-        choices=list(FORMATS.keys()) + ["epub", "all"],
         default="all",
-        help="Format de sortie ou 'all' pour tous les formats (défaut: all)",
+        help="Format(s) : phone,ereader,tablet7,tablet10,a4premium,a4editorial,epub,all (comma-separated)",
     )
     parser.add_argument(
         "--output-dir", "-o", type=Path, default=OUTPUT_DIR,
@@ -3692,7 +3691,12 @@ def main():
     if args.format == "all":
         formats_to_gen = list(FORMATS.keys()) + ["epub"]
     else:
-        formats_to_gen = [args.format]
+        valid = set(FORMATS.keys()) | {"epub"}
+        formats_to_gen = [f.strip() for f in args.format.split(",")]
+        for f in formats_to_gen:
+            if f not in valid:
+                print(f"  ❌ Format inconnu : '{f}' (valides : {', '.join(sorted(valid))})")
+                sys.exit(1)
 
     # ── Session & login ────────────────────────────────────────────────
     session = requests.Session()

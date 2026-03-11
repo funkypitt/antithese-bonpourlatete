@@ -23,6 +23,7 @@
 #   ./newspapers.sh --no-substack    # Tout sauf Substack
 #   ./newspapers.sh --no-digest      # Tout sauf le digest
 #   ./newspapers.sh --format a4landscape  # Format spécifique uniquement
+#   ./newspapers.sh --format phone,a4premium,epub  # Plusieurs formats
 #   ./newspapers.sh --asia            # Economist : d'Asia à Obituary (sans Leaders/US/Americas)
 #
 # Les identifiants peuvent être fournis par variables d'env :
@@ -315,18 +316,21 @@ show_interactive_menu() {
 # ── Menu interactif : choix du format PDF ─────────────────────────────────
 show_format_menu() {
     local fmt_names=(
-        "Tous les formats (6 PDFs + EPUB)"
         "📱 Téléphone"
         "📖 Liseuse 6 pouces"
         "📱 Tablette 7 pouces"
         "📱 Tablette 10 pouces"
         "🖨️  A4 Premium (portrait)"
         "🖨️  A4 Premium Paysage (3 col.)"
-        "📚 EPUB uniquement"
+        "📚 EPUB"
     )
-    local fmt_keys=("all" "phone" "ereader" "tablet7" "tablet10" "a4premium" "a4landscape" "epub")
+    local fmt_keys=("phone" "ereader" "tablet7" "tablet10" "a4premium" "a4landscape" "epub")
     local num_fmts=${#fmt_names[@]}
     local current=0
+
+    # All formats checked by default
+    local items=()
+    for ((i = 0; i < num_fmts; i++)); do items+=("true"); done
 
     local saved_stty
     saved_stty=$(stty -g)
@@ -338,35 +342,39 @@ show_format_menu() {
             tput el  2>/dev/null || printf '\033[2K'
         done
 
-        echo "  Sélectionner le format de sortie PDF :"
-        echo "  ───────────────────────────────────────"
+        echo "  Sélectionner les formats de sortie :"
+        echo "  ─────────────────────────────────────"
         for ((i = 0; i < num_fmts; i++)); do
+            local check="  "
+            [[ "${items[$i]}" == "true" ]] && check="✓ "
             local marker="  "
             [[ $i -eq $current ]] && marker="▸ "
             if [[ $i -eq $current ]]; then
-                printf "  \033[1;36m%s %s\033[0m\n" "$marker" "${fmt_names[$i]}"
+                printf "  \033[1;36m%s[%s] %s\033[0m\n" "$marker" "$check" "${fmt_names[$i]}"
             else
-                printf "  %s %s\n" "$marker" "${fmt_names[$i]}"
+                printf "  %s[%s] %s\n" "$marker" "$check" "${fmt_names[$i]}"
             fi
         done
         echo ""
-        echo "  ↑↓ naviguer  ·  Entrée valider  ·  q quitter"
+        echo "  ↑↓ naviguer  ·  Espace cocher  ·  Entrée valider  ·  a tout  ·  n rien  ·  q quitter"
     }
 
     # Initial draw
-    echo "  Sélectionner le format de sortie PDF :"
-    echo "  ───────────────────────────────────────"
+    echo "  Sélectionner les formats de sortie :"
+    echo "  ─────────────────────────────────────"
     for ((i = 0; i < num_fmts; i++)); do
+        local check="  "
+        [[ "${items[$i]}" == "true" ]] && check="✓ "
         local marker="  "
         [[ $i -eq $current ]] && marker="▸ "
         if [[ $i -eq $current ]]; then
-            printf "  \033[1;36m%s %s\033[0m\n" "$marker" "${fmt_names[$i]}"
+            printf "  \033[1;36m%s[%s] %s\033[0m\n" "$marker" "$check" "${fmt_names[$i]}"
         else
-            printf "  %s %s\n" "$marker" "${fmt_names[$i]}"
+            printf "  %s[%s] %s\n" "$marker" "$check" "${fmt_names[$i]}"
         fi
     done
     echo ""
-    echo "  ↑↓ naviguer  ·  Entrée valider  ·  q quitter"
+    echo "  ↑↓ naviguer  ·  Espace cocher  ·  Entrée valider  ·  a tout  ·  n rien  ·  q quitter"
 
     while true; do
         stty raw -echo
@@ -388,8 +396,21 @@ show_format_menu() {
                     esac
                 fi
                 ;;
+            " ") # Espace : toggle
+                if [[ "${items[$current]}" == "true" ]]; then
+                    items[$current]="false"
+                else
+                    items[$current]="true"
+                fi
+                ;;
             $'\n'|$'\r'|"")
                 break
+                ;;
+            "a"|"A") # Tout cocher
+                for ((i = 0; i < num_fmts; i++)); do items[$i]="true"; done
+                ;;
+            "n"|"N") # Tout décocher
+                for ((i = 0; i < num_fmts; i++)); do items[$i]="false"; done
                 ;;
             "q"|"Q")
                 echo ""
@@ -407,8 +428,34 @@ show_format_menu() {
         draw_format_menu
     done
 
-    FORMAT_SELECTION="${fmt_keys[$current]}"
-    echo "  → ${fmt_names[$current]}"
+    # Build comma-separated list of selected formats
+    local selected=()
+    for ((i = 0; i < num_fmts; i++)); do
+        if [[ "${items[$i]}" == "true" ]]; then
+            selected+=("${fmt_keys[$i]}")
+        fi
+    done
+
+    if [[ ${#selected[@]} -eq 0 ]]; then
+        echo ""
+        echo "  ⚠  Aucun format sélectionné. Fin."
+        exit 0
+    fi
+
+    # If all formats selected, use "all" for backward compatibility
+    if [[ ${#selected[@]} -eq $num_fmts ]]; then
+        FORMAT_SELECTION="all"
+    else
+        FORMAT_SELECTION=$(IFS=,; echo "${selected[*]}")
+    fi
+
+    # Display summary
+    echo "  → Formats :"
+    for ((i = 0; i < num_fmts; i++)); do
+        if [[ "${items[$i]}" == "true" ]]; then
+            echo "    ✓ ${fmt_names[$i]}"
+        fi
+    done
     echo ""
 }
 
@@ -463,17 +510,32 @@ echo "║  📰  Lancement — $DATE               ║"
 echo "╚══════════════════════════════════════════════╝"
 echo ""
 # ── Résoudre le label du format sélectionné ──────────────────────────────
-case "$FORMAT_SELECTION" in
-    all)         FORMAT_LABEL="tous (6 PDFs + EPUB)" ;;
-    phone)       FORMAT_LABEL="📱 téléphone" ;;
-    ereader)     FORMAT_LABEL="📖 liseuse" ;;
-    tablet7)     FORMAT_LABEL="📱 tablette 7\"" ;;
-    tablet10)    FORMAT_LABEL="📱 tablette 10\"" ;;
-    a4premium)   FORMAT_LABEL="🖨️  A4 premium" ;;
-    a4landscape) FORMAT_LABEL="🖨️  A4 premium paysage" ;;
-    epub)        FORMAT_LABEL="📚 EPUB" ;;
-    *)           FORMAT_LABEL="$FORMAT_SELECTION" ;;
-esac
+resolve_format_label() {
+    case "$1" in
+        phone)       echo "📱 téléphone" ;;
+        ereader)     echo "📖 liseuse" ;;
+        tablet7)     echo "📱 tablette 7\"" ;;
+        tablet10)    echo "📱 tablette 10\"" ;;
+        a4premium)   echo "🖨️  A4 premium" ;;
+        a4landscape) echo "🖨️  A4 premium paysage" ;;
+        epub)        echo "📚 EPUB" ;;
+        *)           echo "$1" ;;
+    esac
+}
+
+if [[ "$FORMAT_SELECTION" == "all" ]]; then
+    FORMAT_LABEL="tous (6 PDFs + EPUB)"
+elif [[ "$FORMAT_SELECTION" == *,* ]]; then
+    # Multiple formats — build label from each
+    FORMAT_LABEL=""
+    IFS=',' read -ra _fmts <<< "$FORMAT_SELECTION"
+    for _f in "${_fmts[@]}"; do
+        [[ -n "$FORMAT_LABEL" ]] && FORMAT_LABEL+=", "
+        FORMAT_LABEL+="$(resolve_format_label "$_f")"
+    done
+else
+    FORMAT_LABEL="$(resolve_format_label "$FORMAT_SELECTION")"
+fi
 
 echo "  📂 Sortie : ~/kDrive/newspapers/journaux_du_jour/"
 echo "  📐 Format : ${FORMAT_LABEL}"

@@ -2528,9 +2528,8 @@ def main():
     ap.add_argument("--no-headless", action="store_true", help="Voir le navigateur")
     ap.add_argument("--output-dir", "-o", default=None)
     ap.add_argument("--format", "-f",
-                    choices=list(FORMATS.keys()) + ["epub", "all"],
                     default="all",
-                    help="Format écran ou 'all' pour les 5 + epub (défaut: all)")
+                    help="Format(s) : phone,ereader,tablet7,tablet10,a4premium,a4landscape,epub,all (comma-separated)")
     ap.add_argument("--verbose", "-v", action="store_true")
     args = ap.parse_args()
 
@@ -2561,7 +2560,12 @@ def main():
     if args.format == "all":
         formats_to_gen = list(FORMATS.keys()) + ["epub"]
     else:
-        formats_to_gen = [args.format]
+        valid = set(FORMATS.keys()) | {"epub"}
+        formats_to_gen = [f.strip() for f in args.format.split(",")]
+        for f in formats_to_gen:
+            if f not in valid:
+                log.error(f"Format inconnu : '{f}' (valides : {', '.join(sorted(valid))})")
+                sys.exit(1)
 
     td = datetime.strptime(args.date, "%Y-%m-%d").date() if args.date else date.today()
     out_dir = Path(args.output_dir) if args.output_dir else OUTPUT_DIR

@@ -1159,7 +1159,7 @@ class EconomistDownloader:
 
     # ─── Point d'entrée principal ───────────────────────────────────────
 
-    def run(self, list_only=False, generate_all=False, epub_only=False):
+    def run(self, list_only=False, generate_all=False, epub_only=False, formats_list=None):
         """Exécute le workflow complet."""
         self.fetch_edition_index()
 
@@ -1179,6 +1179,24 @@ class EconomistDownloader:
             epub_path = self.generate_epub_book()
             if epub_path:
                 paths.append(epub_path)
+            self.print_summary()
+            return paths
+
+        if formats_list:
+            # Generate a specific subset of formats
+            paths = []
+            pdf_keys = [f for f in formats_list if f != 'epub']
+            want_epub = 'epub' in formats_list
+            for key in pdf_keys:
+                try:
+                    path = self.generate_pdf(fmt=FORMATS[key])
+                    paths.append(path)
+                except Exception as e:
+                    print(f'  ⚠ Erreur format {key}: {e}')
+            if want_epub:
+                epub_path = self.generate_epub_book()
+                if epub_path:
+                    paths.append(epub_path)
             self.print_summary()
             return paths
 
@@ -1219,9 +1237,8 @@ Exemples:
     parser.add_argument('--delay', type=float, default=1.0,
                         help='Délai entre requêtes en secondes (défaut: 1.0)')
     parser.add_argument('--format', '-f',
-                        choices=['phone', 'ereader', 'tablet7', 'tablet10', 'a4premium', 'a4landscape', 'epub', 'all'],
                         default=None,
-                        help='Format écran (sinon: menu interactif)')
+                        help='Format(s) : phone,ereader,tablet7,tablet10,a4premium,a4landscape,epub,all (comma-separated)')
     parser.add_argument('--sections', '-s',
                         choices=['all', 'asia'],
                         default=None,
@@ -1232,13 +1249,26 @@ Exemples:
     # Format selection
     generate_all = False
     epub_only = False
+    formats_list = None  # None = single format; list = specific subset
     if args.format == 'all':
         generate_all = True
         fmt = FORMATS[DEFAULT_FORMAT]  # used for initial setup
+    elif args.format and ',' in args.format:
+        # Multiple comma-separated formats
+        valid = set(FORMATS.keys()) | {'epub'}
+        formats_list = [f.strip() for f in args.format.split(',')]
+        for f in formats_list:
+            if f not in valid:
+                print(f'  ❌ Format inconnu : {f!r} (valides : {", ".join(sorted(valid))})')
+                sys.exit(1)
+        fmt = FORMATS[DEFAULT_FORMAT]
     elif args.format == 'epub':
         epub_only = True
         fmt = FORMATS[DEFAULT_FORMAT]
     elif args.format:
+        if args.format not in FORMATS:
+            print(f'  ❌ Format inconnu : {args.format!r}')
+            sys.exit(1)
         fmt = FORMATS[args.format]
     elif not args.list_only:
         key, fmt = select_format_profile()
@@ -1269,7 +1299,7 @@ Exemples:
     )
 
     downloader.run(list_only=args.list_only, generate_all=generate_all,
-                   epub_only=epub_only)
+                   epub_only=epub_only, formats_list=formats_list)
 
 
 if __name__ == '__main__':
