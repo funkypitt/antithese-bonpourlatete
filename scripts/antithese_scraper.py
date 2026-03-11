@@ -50,6 +50,8 @@ from urllib.parse import urljoin
 import requests
 from bs4 import BeautifulSoup
 
+from epub_generator import generate_epub
+
 # ── Identifiants (à renseigner ici pour éviter la saisie interactive) ──────
 ANTITHESE_USER = "pierre.crot@protonmail.com"
 ANTITHESE_PASS = "Moroder1976!"
@@ -212,6 +214,18 @@ FORMATS = {
         "margin": "28mm",
         "line_height": "1.7",
     },
+    "a4landscape": {
+        "label": "🖨️  A4 Premium Paysage (3 colonnes)",
+        "suffix": "A4_premium_landscape",
+        "width_mm": 297,
+        "height_mm": 210,
+        "font_size": "11pt",
+        "h1_size": "26pt",
+        "h2_size": "20pt",
+        "h3_size": "13pt",
+        "margin": "18mm",
+        "line_height": "1.6",
+    },
 }
 
 EDITION_URL = "https://www.antithese.info/bon-pour-la-tete/"
@@ -285,6 +299,17 @@ def download_image_as_data_uri(session: requests.Session, url: str) -> str | Non
         b64 = base64.b64encode(resp.content).decode("ascii")
         return f"data:{content_type};base64,{b64}"
     except Exception as e:
+        return None
+
+
+def download_image_bytes(session: requests.Session, url: str) -> tuple[bytes, str] | None:
+    """Download an image and return (bytes, content_type)."""
+    try:
+        resp = session.get(url, headers=HEADERS, timeout=15)
+        resp.raise_for_status()
+        content_type = resp.headers.get("Content-Type", "image/jpeg")
+        return resp.content, content_type
+    except Exception:
         return None
 
 
@@ -2754,6 +2779,722 @@ def generate_editorial_pdf(
     print(f"  ✅ {output_path.name} ({size_mb:.1f} Mo)")
 
 
+# ── PDF Generation (A4 Premium Paysage — 3-column landscape) ──────────────
+def generate_premium_landscape_pdf(
+    articles: list[dict],
+    edition_title: str,
+    date_str: str,
+    output_path: Path,
+    session: requests.Session,
+    logo_light_uri: str | None = None,
+    logo_dark_uri: str | None = None,
+    dessin_info: dict | None = None,
+):
+    """Generate a premium A4 landscape magazine-style PDF with 3-column layout.
+
+    Same content as generate_premium_pdf but adapted for landscape A4:
+    - 297×210mm landscape page
+    - Three-column body text
+    - Wider cover with two-column highlights
+    - Three-column table of contents
+    """
+    from weasyprint import HTML
+
+    print("  🎨 Préparation de l'édition A4 Premium Paysage…")
+
+    # ── Download images for articles ───────────────────────────────────
+    print("  🖼️  Téléchargement des images…")
+    image_cache = {}
+    for i, art in enumerate(articles):
+        img_url = art.get("image_url") or art.get("thumb_url")
+        if img_url and img_url not in image_cache:
+            # Try to get the highest-resolution version
+            # WP thumbnails often have -NNNxNNN before extension; strip it
+            hires_url = re.sub(r"-\d+x\d+(\.\w+)$", r"\1", img_url)
+            data_uri = download_image_as_data_uri(session, hires_url)
+            if not data_uri and hires_url != img_url:
+                data_uri = download_image_as_data_uri(session, img_url)
+            if data_uri:
+                image_cache[img_url] = data_uri
+                image_cache[hires_url] = data_uri
+        img_status = "✓" if (img_url and (img_url in image_cache or
+                              re.sub(r"-\d+x\d+(\.\w+)$", r"\1", img_url) in image_cache)) else "—"
+        print(f"     [{i+1}/{len(articles)}] {img_status} {art.get('title', '')[:55]}…")
+
+    # ── Build articles HTML ────────────────────────────────────────────
+    articles_html = ""
+    for i, art in enumerate(articles):
+        category_html = ""
+        if art.get("category"):
+            category_html = f'<div class="pm-category">{art["category"]}</div>'
+
+        author_html = ""
+        if art.get("author"):
+            author_html = f'<div class="pm-author">Par {art["author"]}</div>'
+
+        lead_html = ""
+        if art.get("lead"):
+            lead_html = f'<div class="pm-lead">{art["lead"]}</div>'
+
+        # Hero image
+        image_html = ""
+        img_url = art.get("image_url") or art.get("thumb_url")
+        if img_url:
+            hires = re.sub(r"-\d+x\d+(\.\w+)$", r"\1", img_url)
+            data_uri = image_cache.get(hires) or image_cache.get(img_url)
+            if data_uri:
+                cap = art.get("image_caption", "")
+                cap_html = f'<div class="pm-img-caption">{cap}</div>' if cap else ""
+                image_html = f'''
+                <div class="pm-hero-img">
+                    <img src="{data_uri}" alt="" />
+                    {cap_html}
+                </div>'''
+
+        # Process body to add drop cap to first paragraph
+        body_html = art.get("content_html", "")
+        drop_cap_done = False
+        if body_html:
+            def add_drop_cap(match):
+                nonlocal drop_cap_done
+                if drop_cap_done:
+                    return match.group(0)
+                drop_cap_done = True
+                inner = match.group(1)
+                if inner:
+                    first_char = inner[0]
+                    rest = inner[1:]
+                    return f'<p><span class="drop-cap">{first_char}</span>{rest}</p>'
+                return match.group(0)
+
+            body_html = re.sub(r"<p>(.+?)</p>", add_drop_cap, body_html, count=1, flags=re.DOTALL)
+
+        articles_html += f"""
+        <article class="pm-article" id="art-{i}">
+            {category_html}
+            <h2 class="pm-title">{art.get("title", "Sans titre")}</h2>
+            {author_html}
+            <div class="pm-rule-thin"></div>
+            {image_html}
+            {lead_html}
+            <div class="pm-body">
+                {body_html}
+            </div>
+        </article>
+        """
+
+    # ── Cover logo: dark banner with original (white+red) logo ──────────
+    if logo_dark_uri:
+        logo_html = f'''
+        <div class="cover-banner">
+            <img class="cover-logo" src="{logo_dark_uri}" alt="Antithèse" />
+        </div>'''
+    elif logo_light_uri:
+        # Fallback: light-bg version without banner
+        logo_html = f'<img class="cover-logo-light" src="{logo_light_uri}" alt="Antithèse" />'
+    else:
+        logo_html = '<h1 class="cover-title-fallback">ANTITHÈSE</h1>'
+
+    # Colophon uses the light-background version (dark text on light bg)
+    if logo_light_uri:
+        colophon_logo = f'<img class="colophon-logo" src="{logo_light_uri}" alt="" />'
+    elif logo_dark_uri:
+        # Fallback: original on light bg (partially invisible but better than nothing)
+        colophon_logo = f'<img class="colophon-logo" src="{logo_dark_uri}" alt="" />'
+    else:
+        colophon_logo = ""
+
+    # ── Build TOC ──────────────────────────────────────────────────────
+    toc_items = ""
+    for idx, art in enumerate(articles):
+        cat = f'<span class="toc-cat">{art.get("category", "")}</span>' if art.get("category") else ""
+        auth = f'<span class="toc-author">{art.get("author", "")}</span>' if art.get("author") else ""
+        toc_items += f"""
+        <a class="toc-entry" href="#art-{idx}">
+            <span class="toc-details">
+                {cat}
+                <span class="toc-title">{art.get("title", "")}</span>
+                {auth}
+            </span>
+        </a>"""
+
+    # ── Cover content: dessin de la semaine OR article highlights ────
+    cover_content = ""
+    if dessin_info:
+        # Download the dessin image
+        dessin_uri = download_image_as_data_uri(session, dessin_info["image_url"])
+        if not dessin_uri and dessin_info.get("image_url_fallback"):
+            dessin_uri = download_image_as_data_uri(session, dessin_info["image_url_fallback"])
+        if dessin_uri:
+            dessin_title_html = ""
+            if dessin_info.get("title"):
+                dessin_title_html = f'<div class="cover-dessin-title">{dessin_info["title"]}</div>'
+            dessin_artist_html = ""
+            if dessin_info.get("artist"):
+                dessin_artist_html = f'<div class="cover-dessin-artist">{dessin_info["artist"]}</div>'
+            cover_content = f"""
+    <div class="cover-dessin">
+        <div class="cover-dessin-label">Le dessin de la semaine</div>
+        <img class="cover-dessin-img" src="{dessin_uri}" alt="" />
+        {dessin_title_html}
+        {dessin_artist_html}
+    </div>"""
+            print(f"     ↳ Dessin de la semaine en couverture")
+
+    if not cover_content:
+        # Fallback: first 4 articles with thumbnails
+        cover_content = '<div class="cover-highlights">'
+        for art in articles[:4]:
+            cat_hl = f'<div class="cover-hl-cat">{art.get("category", "")}</div>' if art.get("category") else ""
+            auth_hl = f'<div class="cover-hl-author">{art.get("author", "")}</div>' if art.get("author") else ""
+
+            thumb_html = ""
+            img_url = art.get("image_url") or art.get("thumb_url")
+            if img_url:
+                hires = re.sub(r"-\d+x\d+(\.\w+)$", r"\1", img_url)
+                data_uri = image_cache.get(hires) or image_cache.get(img_url)
+                if data_uri:
+                    thumb_html = f'<img class="cover-hl-thumb" src="{data_uri}" alt="" />'
+
+            cover_content += f"""
+        <div class="cover-hl">
+            {thumb_html}
+            <div class="cover-hl-text">
+                {cat_hl}
+                <div class="cover-hl-title">{art.get("title", "")}</div>
+                {auth_hl}
+            </div>
+        </div>"""
+        cover_content += "\n    </div>"
+
+    # ── Full HTML document ─────────────────────────────────────────────
+    html = f"""<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<style>
+    /* ================================================================
+       ANTITHÈSE — ÉDITION PREMIUM A4 PAYSAGE
+       Mise en page 3 colonnes sur format paysage
+       ================================================================ */
+
+    @page {{
+        size: 297mm 210mm;
+        margin: 18mm 22mm 20mm 22mm;
+
+        @bottom-right {{
+            content: counter(page);
+            font-family: "DejaVu Sans", "Noto Sans", Helvetica, sans-serif;
+            font-size: 8pt;
+            color: #999;
+        }}
+    }}
+
+    @page :first {{
+        margin: 0;
+        @bottom-right {{ content: none; }}
+    }}
+
+    * {{
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+    }}
+
+    body {{
+        font-family: "DejaVu Serif", "Noto Serif", Georgia, "Times New Roman", serif;
+        font-size: 11pt;
+        line-height: 1.6;
+        color: #1a1a1a;
+        text-align: justify;
+        hyphens: auto;
+        -webkit-hyphens: auto;
+        orphans: 3;
+        widows: 3;
+    }}
+
+    /* ════════════════════════════════════════════════════════════════
+       COVER PAGE
+       ════════════════════════════════════════════════════════════════ */
+    .cover {{
+        page-break-after: always;
+        width: 297mm;
+        height: 210mm;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        text-align: center;
+        background: #faf9f7;
+        padding: 22mm 40mm;
+        position: relative;
+    }}
+
+    .cover::before {{
+        content: "";
+        position: absolute;
+        top: 20mm;
+        left: 25mm;
+        right: 25mm;
+        height: 0.8pt;
+        background: #1a1a1a;
+    }}
+
+    .cover::after {{
+        content: "";
+        position: absolute;
+        bottom: 20mm;
+        left: 25mm;
+        right: 25mm;
+        height: 0.8pt;
+        background: #1a1a1a;
+    }}
+
+    /* Dark banner behind logo (original white+red SVG) */
+    .cover-banner {{
+        background: #1a1a1a;
+        padding: 6mm 10mm;
+        margin-bottom: 8mm;
+        width: 80mm;
+        text-align: center;
+    }}
+
+    .cover-banner .cover-logo {{
+        width: 55mm;
+        height: auto;
+    }}
+
+    /* Light-bg version (fallback: no banner, dark text on light bg) */
+    .cover-logo-light {{
+        width: 55mm;
+        height: auto;
+        margin-bottom: 6mm;
+    }}
+
+    .cover-title-fallback {{
+        font-family: "DejaVu Serif", Georgia, serif;
+        font-size: 36pt;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        color: #1a1a1a;
+        margin-bottom: 2mm;
+        text-transform: uppercase;
+    }}
+
+    .cover-subtitle {{
+        font-family: "DejaVu Serif", Georgia, serif;
+        font-size: 12pt;
+        font-style: italic;
+        color: #666;
+        letter-spacing: 0.06em;
+        margin-bottom: 10mm;
+    }}
+
+    .cover-edition {{
+        font-family: "DejaVu Sans", "Noto Sans", Helvetica, sans-serif;
+        font-size: 11pt;
+        font-weight: 600;
+        color: #333;
+        text-transform: uppercase;
+        letter-spacing: 0.15em;
+        padding: 2.5mm 8mm;
+        border-top: 0.5pt solid #1a1a1a;
+        border-bottom: 0.5pt solid #1a1a1a;
+        margin-bottom: 14mm;
+    }}
+
+    .cover-tagline {{
+        font-size: 9pt;
+        color: #888;
+        font-style: italic;
+        margin-bottom: 10mm;
+    }}
+
+    .cover-highlights {{
+        margin-top: 8mm;
+        text-align: left;
+        max-width: 200mm;
+        column-count: 2;
+        column-gap: 10mm;
+    }}
+
+    .cover-hl {{
+        display: flex;
+        align-items: center;
+        gap: 4mm;
+        margin-bottom: 4mm;
+        padding-bottom: 4mm;
+        border-bottom: 0.3pt solid #ccc;
+        break-inside: avoid;
+    }}
+    .cover-hl:last-child {{
+        border-bottom: none;
+    }}
+
+    .cover-hl-thumb {{
+        width: 22mm;
+        height: 16mm;
+        object-fit: cover;
+        flex-shrink: 0;
+    }}
+
+    .cover-hl-text {{
+        flex: 1;
+        min-width: 0;
+    }}
+
+    .cover-hl-cat {{
+        font-family: "DejaVu Sans", "Noto Sans", Helvetica, sans-serif;
+        font-size: 7pt;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+        color: #999;
+        margin-bottom: 1mm;
+    }}
+    .cover-hl-title {{
+        font-family: "DejaVu Serif", Georgia, serif;
+        font-size: 11pt;
+        font-weight: 700;
+        line-height: 1.25;
+        color: #1a1a1a;
+    }}
+    .cover-hl-author {{
+        font-size: 8pt;
+        font-style: italic;
+        color: #777;
+        margin-top: 1mm;
+    }}
+
+    /* ── Cover: Dessin de la semaine ── */
+    .cover-dessin {{
+        margin-top: 6mm;
+        text-align: center;
+    }}
+    .cover-dessin-label {{
+        font-family: "DejaVu Sans", "Noto Sans", Helvetica, sans-serif;
+        font-size: 8pt;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.15em;
+        color: #999;
+        margin-bottom: 4mm;
+    }}
+    .cover-dessin-img {{
+        max-width: 140mm;
+        max-height: 90mm;
+        width: auto;
+        height: auto;
+        object-fit: contain;
+    }}
+    .cover-dessin-title {{
+        font-family: "DejaVu Serif", Georgia, serif;
+        font-size: 10pt;
+        font-weight: 700;
+        color: #1a1a1a;
+        margin-top: 3mm;
+        line-height: 1.3;
+    }}
+    .cover-dessin-artist {{
+        font-size: 8pt;
+        font-style: italic;
+        color: #777;
+        margin-top: 1mm;
+    }}
+
+    /* ════════════════════════════════════════════════════════════════
+       TABLE OF CONTENTS
+       ════════════════════════════════════════════════════════════════ */
+    .toc-page {{
+        page-break-after: always;
+        padding-top: 5mm;
+    }}
+
+    .toc-header {{
+        font-family: "DejaVu Sans", "Noto Sans", Helvetica, sans-serif;
+        font-size: 9pt;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.2em;
+        color: #999;
+        margin-bottom: 6mm;
+        padding-bottom: 2mm;
+        border-bottom: 0.8pt solid #1a1a1a;
+    }}
+
+    .toc-content {{
+        column-count: 3;
+        column-gap: 8mm;
+        column-rule: 0.3pt solid #e5e5e5;
+    }}
+
+    .toc-entry {{
+        display: flex;
+        align-items: baseline;
+        margin-bottom: 4mm;
+        padding-bottom: 4mm;
+        border-bottom: 0.3pt solid #e0e0e0;
+        text-decoration: none;
+        color: inherit;
+        break-inside: avoid;
+    }}
+    .toc-entry:last-child {{
+        border-bottom: none;
+    }}
+
+    .toc-entry::before {{
+        content: target-counter(attr(href), page);
+        font-family: "DejaVu Sans", "Noto Sans", Helvetica, sans-serif;
+        font-size: 18pt;
+        font-weight: 300;
+        color: #555;
+        min-width: 12mm;
+        line-height: 1;
+    }}
+
+    .toc-details {{
+        flex: 1;
+        display: block;
+    }}
+
+    .toc-cat {{
+        font-family: "DejaVu Sans", "Noto Sans", Helvetica, sans-serif;
+        font-size: 7pt;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        color: #999;
+        display: block;
+        margin-bottom: 0.5mm;
+        break-after: avoid;
+    }}
+
+    .toc-title {{
+        font-family: "DejaVu Serif", Georgia, serif;
+        font-size: 11pt;
+        font-weight: 700;
+        line-height: 1.3;
+        color: #1a1a1a;
+        display: block;
+    }}
+
+    .toc-author {{
+        font-size: 8.5pt;
+        font-style: italic;
+        color: #777;
+        display: block;
+        margin-top: 0.5mm;
+    }}
+
+    /* ════════════════════════════════════════════════════════════════
+       ARTICLES
+       ════════════════════════════════════════════════════════════════ */
+    .pm-article {{
+        page-break-before: always;
+    }}
+
+    .pm-category {{
+        font-family: "DejaVu Sans", "Noto Sans", Helvetica, sans-serif;
+        font-size: 8pt;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.15em;
+        color: #888;
+        margin-bottom: 3mm;
+    }}
+
+    .pm-title {{
+        font-family: "DejaVu Serif", Georgia, serif;
+        font-size: 24pt;
+        font-weight: 700;
+        line-height: 1.15;
+        color: #1a1a1a;
+        margin-bottom: 3mm;
+        letter-spacing: -0.01em;
+    }}
+
+    .pm-author {{
+        font-family: "DejaVu Serif", Georgia, serif;
+        font-size: 9pt;
+        font-style: italic;
+        color: #666;
+        margin-bottom: 4mm;
+    }}
+
+    .pm-rule-thin {{
+        height: 0.5pt;
+        background: #ccc;
+        margin-bottom: 5mm;
+    }}
+
+    .pm-hero-img {{
+        margin-bottom: 5mm;
+        text-align: center;
+    }}
+    .pm-hero-img img {{
+        width: 100%;
+        height: auto;
+        max-height: 70mm;
+        object-fit: cover;
+        display: block;
+    }}
+    .pm-img-caption {{
+        font-family: "DejaVu Sans", "Noto Sans", Helvetica, sans-serif;
+        font-size: 7pt;
+        color: #999;
+        font-style: italic;
+        margin-top: 1.5mm;
+        text-align: right;
+    }}
+
+    .pm-lead {{
+        font-family: "DejaVu Serif", Georgia, serif;
+        font-size: 11.5pt;
+        font-weight: 600;
+        line-height: 1.45;
+        color: #333;
+        margin-bottom: 5mm;
+        padding-bottom: 4mm;
+        border-bottom: 0.3pt solid #ddd;
+    }}
+
+    /* Three-column body */
+    .pm-body {{
+        column-count: 3;
+        column-gap: 7mm;
+        column-rule: 0.3pt solid #e5e5e5;
+        font-size: 10pt;
+        line-height: 1.6;
+    }}
+
+    .pm-body p {{
+        margin-bottom: 0.5em;
+        text-indent: 1.2em;
+    }}
+    .pm-body p:first-child {{
+        text-indent: 0;
+    }}
+
+    /* Drop cap */
+    .drop-cap {{
+        float: left;
+        font-family: "DejaVu Serif", Georgia, serif;
+        font-size: 42pt;
+        line-height: 0.75;
+        padding-right: 2mm;
+        padding-top: 2mm;
+        color: #1a1a1a;
+        font-weight: 700;
+    }}
+
+    .pm-body h2, .pm-body h3, .pm-body h4 {{
+        font-family: "DejaVu Sans", "Noto Sans", Helvetica, sans-serif;
+        font-size: 10pt;
+        font-weight: 700;
+        margin-top: 1em;
+        margin-bottom: 0.4em;
+        text-indent: 0;
+        column-span: none;
+        color: #333;
+    }}
+
+    .pm-body blockquote {{
+        margin: 0.8em 0;
+        padding: 0.5em 0.8em;
+        border-left: 2.5pt solid #d0d0d0;
+        color: #444;
+        font-style: italic;
+        font-size: 9.5pt;
+        background: #faf9f7;
+    }}
+    .pm-body blockquote p {{
+        text-indent: 0 !important;
+        margin-bottom: 0.3em;
+    }}
+
+    /* ════════════════════════════════════════════════════════════════
+       COLOPHON
+       ════════════════════════════════════════════════════════════════ */
+    .colophon {{
+        page-break-before: always;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        text-align: center;
+        height: 100%;
+    }}
+
+    .colophon-logo {{
+        width: 35mm;
+        height: auto;
+        margin-bottom: 8mm;
+        opacity: 0.4;
+    }}
+
+    .colophon-text {{
+        font-family: "DejaVu Sans", "Noto Sans", Helvetica, sans-serif;
+        font-size: 8pt;
+        color: #aaa;
+        line-height: 1.8;
+    }}
+
+    .colophon-rule {{
+        width: 30mm;
+        height: 0.5pt;
+        background: #ccc;
+        margin: 6mm auto;
+    }}
+</style>
+</head>
+<body>
+
+<!-- ═══════════ COVER ═══════════ -->
+<div class="cover">
+    {logo_html}
+    <div class="cover-subtitle">Bon pour la tête</div>
+    <div class="cover-edition">{edition_title}</div>
+    <div class="cover-tagline">Un média indépendant et a-partisan</div>
+
+    {cover_content}
+</div>
+
+<!-- ═══════════ TABLE OF CONTENTS ═══════════ -->
+<div class="toc-page">
+    <div class="toc-header">Sommaire</div>
+    <div class="toc-content">
+        {toc_items}
+    </div>
+</div>
+
+<!-- ═══════════ ARTICLES ═══════════ -->
+{articles_html}
+
+<!-- ═══════════ COLOPHON ═══════════ -->
+<div class="colophon">
+    {colophon_logo}
+    <div class="colophon-text">
+        Antithèse — Bon pour la tête<br/>
+        <em>Un média indépendant et a-partisan</em>
+    </div>
+    <div class="colophon-rule"></div>
+    <div class="colophon-text">
+        antithese.info<br/>
+        Généré le {datetime.now().strftime("%d.%m.%Y à %H:%M")}
+    </div>
+</div>
+
+</body>
+</html>"""
+
+    # ── Generate PDF ───────────────────────────────────────────────────
+    print(f"  📄 Génération PDF (🖨️  A4 Premium Paysage)…")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    HTML(string=html).write_pdf(str(output_path))
+    size_mb = output_path.stat().st_size / (1024 * 1024)
+    print(f"  ✅ {output_path.name} ({size_mb:.1f} Mo)")
+
+
 # ── Interactive mode helpers ───────────────────────────────────────────────
 
 def _is_interactive(args):
@@ -2905,7 +3646,7 @@ def main():
     parser.add_argument("--password", "-p", help="Mot de passe")
     parser.add_argument(
         "--format", "-f",
-        choices=list(FORMATS.keys()) + ["all"],
+        choices=list(FORMATS.keys()) + ["epub", "all"],
         default="all",
         help="Format de sortie ou 'all' pour tous les formats (défaut: all)",
     )
@@ -2949,7 +3690,7 @@ def main():
 
     # ── Formats to generate ────────────────────────────────────────────
     if args.format == "all":
-        formats_to_gen = list(FORMATS.keys())
+        formats_to_gen = list(FORMATS.keys()) + ["epub"]
     else:
         formats_to_gen = [args.format]
 
@@ -3044,6 +3785,22 @@ def main():
 
     generated = []
     for fmt_key in formats_to_gen:
+        if fmt_key == "epub":
+            output_path = out_dir / f"{date_str}-antithese.epub"
+            generate_epub(
+                full_articles,
+                publication_title="Antithèse",
+                edition_title=edition_title,
+                date_str=date_str,
+                output_path=output_path,
+                subtitle="Bon pour la tête",
+                tagline="Un média indépendant et a-partisan",
+                publisher="Antithèse / Bon pour la tête",
+                image_fetcher=lambda url: download_image_bytes(session, url),
+            )
+            generated.append(("EPUB", output_path))
+            continue
+
         suffix = FORMATS[fmt_key]["suffix"]
         output_path = out_dir / f"{date_str}-antithese_{suffix}.pdf"
 
@@ -3059,6 +3816,12 @@ def main():
                 output_path, session, logo_light_uri, logo_dark_uri,
                 dessin_info=dessin_info,
             )
+        elif fmt_key == "a4landscape":
+            generate_premium_landscape_pdf(
+                full_articles, edition_title, date_str,
+                output_path, session, logo_light_uri, logo_dark_uri,
+                dessin_info=dessin_info,
+            )
         else:
             generate_pdf(full_articles, edition_title, date_str, fmt_key,
                          output_path, session, logo_light_uri, logo_dark_uri)
@@ -3066,7 +3829,7 @@ def main():
         generated.append((FORMATS[fmt_key]['label'], output_path))
 
     print()
-    print(f"  🎉 Terminé — {len(generated)} PDFs générés !")
+    print(f"  🎉 Terminé — {len(generated)} fichier(s) généré(s) !")
     for label, path in generated:
         print(f"     {label}: {path.name}")
     print()
