@@ -1,0 +1,131 @@
+# X Daily Digest - Configuration
+# ================================
+
+# Authentification X (Twitter)
+# Tu devras te connecter manuellement la première fois pour créer la session
+x_auth:
+  # Le cookie de session sera stocké ici après première connexion
+  session_file: "~/.x-digest/session.json"
+  
+# Sources à scraper
+sources:
+  # Feed "For You" - le feed algorithmique principal
+  for_you:
+    enabled: true
+    max_posts: 50  # Nombre max de posts à récupérer
+    
+  # Listes X (les noms seront déduits du contenu par l'IA)
+  lists:
+    - url: "https://x.com/i/lists/1961003735884136468"
+      max_posts: 25
+    - url: "https://x.com/i/lists/1893679612489531795"
+      max_posts: 25
+    - url: "https://x.com/i/lists/1916369053624496156"
+      max_posts: 25
+    - url: "https://x.com/i/lists/1893675786919710760"
+      max_posts: 25
+    - url: "https://x.com/i/lists/1894320629400080772"
+      max_posts: 25
+    - url: "https://x.com/i/lists/1642409183646449664"
+      max_posts: 25
+    - url: "https://x.com/i/lists/1893675416285548689"
+      max_posts: 25
+
+# Filtrage des posts
+filtering:
+  # Seuil minimum d'engagement (likes + retweets + replies)
+  min_engagement: 10
+  
+  # Mots-clés à prioriser (boost le score)
+  priority_keywords:
+    - "IA"
+    - "AI"
+    - "Claude"
+    - "GPT"
+    - "LLM"
+    - "Suisse"
+    - "podcast"
+    
+  # Mots-clés à exclure
+  exclude_keywords:
+    - "crypto"
+    - "NFT"
+    - "airdrop"
+    
+  # Exclure les retweets purs (sans commentaire)
+  exclude_pure_retweets: true
+  
+  # Langues acceptées (null = toutes)
+  languages:
+    - "fr"
+    - "en"
+
+# Résumé IA
+summarizer:
+  # "claude" (API Anthropic) ou "ollama" (local)
+  provider: "ollama"
+  
+  # Config Claude API
+  claude:
+    api_key_env: "ANTHROPIC_API_KEY"  # Variable d'environnement
+    model: "claude-sonnet-4-20250514"
+    
+  # Config Ollama (local - gratuit)
+  ollama:
+    base_url: "http://localhost:11434"
+    model: "llama3.1:8b"  # ou mistral, phi3, etc.
+    
+  # Paramètres de résumé
+  summary:
+    max_tokens: 1500
+    style: "concis et informatif, en français"
+    
+# Génération PDF
+pdf:
+  # Dimensions optimisées tablette 7 pouces (600x1024 pixels ≈ 153x260mm à 100dpi)
+  page_width_mm: 100
+  page_height_mm: 170
+  margin_mm: 8
+  
+  # Typographie
+  fonts:
+    title_size: 14
+    heading_size: 11
+    body_size: 9
+    caption_size: 7
+    
+  # Couleurs (RGB 0-1)
+  colors:
+    primary: [0.1, 0.1, 0.1]      # Noir doux
+    secondary: [0.3, 0.3, 0.3]    # Gris
+    accent: [0.11, 0.63, 0.95]    # Bleu X
+    background: [1, 1, 1]          # Blanc
+    
+  # Fichier de sortie
+  output_dir: "~/x-digest/output"
+  filename_pattern: "x-digest-{date}.pdf"
+
+# Planification
+schedule:
+  # Heure de génération (format 24h)
+  time: "06:30"
+  timezone: "Europe/Zurich"
+  
+# Synchronisation kDrive
+kdrive:
+  enabled: true
+  # Dossier de destination dans kDrive
+  sync_path: "/home/freedomfighter/kDrive/X-Digest"
+  # Garder les N derniers digests (0 = tous)
+  keep_last: 30
+
+# Notification (optionnel)
+notifications:
+  enabled: false
+  # Envoyer par email quand le digest est prêt
+  email:
+    smtp_server: "smtp.example.com"
+    smtp_port: 587
+    username: "ton@email.com"
+    password_env: "SMTP_PASSWORD"
+    to: "ton@email.com"
